@@ -80,19 +80,20 @@ impl Debugger {
                         .expect("can not backtrace");
                 }
                 DebuggerCommand::Break(breakpoint) => {
-                    if !breakpoint.starts_with("*") {
-                        continue;
+                    let addr: usize;
+                    if breakpoint.starts_with("*") {
+                        addr = parse_address(&breakpoint[1..]).unwrap();
+                    } else {
+                        if let Some(val) = self.debug_data.get_addr_for_function(None, &breakpoint) {
+                            addr = val;
+                        } else {
+                            println!("there is no function named {} in the file", breakpoint);
+                            continue;
+                        }
                     }
-                    let bpoint = &breakpoint[1..];
-                    let addr = parse_address(bpoint).unwrap();
 
-                    self.breakpoints.push(addr);
-                    if let Some(inferior) = self.inferior.as_mut() {
-                        inferior.install_breakpoint(addr)
-                            .expect("can not install breakpoint");
-                    }
-                    
-                    println!("Set breakpoint {} at {}", self.breakpoints.len() - 1, bpoint);   
+                    self.install_breakpoint(addr);
+
                 }
                 DebuggerCommand::Quit => {
                     if self.inferior.is_some() {
@@ -103,6 +104,15 @@ impl Debugger {
                 }
             }
         }
+    }
+
+    fn install_breakpoint(&mut self, addr: usize) {
+        self.breakpoints.push(addr);
+        if let Some(inferior) = self.inferior.as_mut() {
+            inferior.install_breakpoint(addr)
+                .expect("can not install breakpoint");
+        }
+        println!("Set breakpoint {} at 0x{:x}", self.breakpoints.len() - 1, addr);  
     }
     
 
