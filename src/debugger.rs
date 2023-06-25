@@ -85,7 +85,13 @@ impl Debugger {
                     }
                     let bpoint = &breakpoint[1..];
                     let addr = parse_address(bpoint).unwrap();
+
                     self.breakpoints.push(addr);
+                    if let Some(inferior) = self.inferior.as_mut() {
+                        inferior.install_breakpoint(addr)
+                            .expect("can not install breakpoint");
+                    }
+                    
                     println!("Set breakpoint {} at {}", self.breakpoints.len() - 1, bpoint);   
                 }
                 DebuggerCommand::Quit => {
@@ -121,7 +127,7 @@ impl Debugger {
             }
 
             Err(err) => {
-                println!("Error in continuing subprocess: {}", err);
+                panic!("Error in continuing subprocess: {}", err);
             }
         }
     }

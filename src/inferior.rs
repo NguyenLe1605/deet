@@ -2,12 +2,15 @@ use nix::sys::ptrace;
 use nix::sys::signal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
+use std::collections::HashMap;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
 use std::mem::size_of;
 
 use crate::dwarf_data::DwarfData;
+
+const INTERRUPT_BYTE: u8 = 0xcc;
 
 pub enum Status {
     /// Indicates inferior stopped. Contains the signal that stopped the process, as well as the
@@ -35,8 +38,15 @@ fn child_traceme() -> Result<(), std::io::Error> {
     )))
 }
 
+#[derive(Clone)]
+struct Breakpoint {
+    addr: usize,
+    orig_byte: u8,
+}
+
 pub struct Inferior {
     child: Child,
+    bpoints_map: HashMap<usize, Breakpoint>,
 }
 
 impl Inferior {
@@ -52,14 +62,15 @@ impl Inferior {
 
         if let Ok(child) = cmd.spawn() {
             let mut inferior = Inferior{
-                child: child
+                child: child,
+                bpoints_map: HashMap::new(),
             };
 
             return match inferior.wait(None) {
                 Err(_) => None,
                 Ok(Status::Stopped(signal::SIGTRAP, _)) => {
-                    for bpoint in breakpoints.iter() {
-                        inferior.write_byte(*bpoint, 0xcc).ok()?;
+                    for breakpoint in breakpoints.iter() {
+                        inferior.install_breakpoint(*breakpoint).ok()?;
                     }
                     Some(inferior)
                 },
@@ -68,6 +79,13 @@ impl Inferior {
         }
 
         None
+    }
+
+    pub fn install_breakpoint(&mut self, breakpoint: usize) -> Result<(), nix::Error> {
+        let orig_byte = self.read_mem(breakpoint)? as u8;
+        self.bpoints_map.insert(breakpoint, Breakpoint { addr: breakpoint, orig_byte });
+        self.write_byte(breakpoint, INTERRUPT_BYTE)?;
+        Ok(())
     }
 
     /// Returns the pid of this inferior.
@@ -90,7 +108,28 @@ impl Inferior {
     }
 
     // Wakes up the inferior and waits until it finished and terminates.
-    pub fn cont(&self) -> Result<Status, nix::Error> {
+    pub fn cont(&mut self, ) -> Result<Status, nix::Error> {
+        let mut  reg = ptrace::getregs(self.pid())?;
+        let rip = reg.rip as usize;
+
+        if let Some(breakpoint) = self.bpoints_map.get(&(rip - 1)) {
+            self.write_byte(breakpoint.addr, breakpoint.orig_byte)?;
+            reg.rip = rip as u64 - 1;
+            ptrace::setregs(self.pid(), reg)?; 
+        }
+
+        if let Some(breakpoint) = self.bpoints_map.get(&(rip - 1)) {
+            ptrace::step(self.pid(), None)?;
+            match self.wait(None) {
+                Ok(Status::Stopped(signal::SIGTRAP, _)) => {
+                    self.write_byte(breakpoint.addr, INTERRUPT_BYTE)?;    
+                }
+                Ok(Status::Exited(code)) => return Ok(Status::Exited(code)),
+                Err(err) => return Err(err),
+                _ => {}
+            }        
+        }
+
         ptrace::cont(self.pid(), None)?;
         return self.wait(None);
     }
