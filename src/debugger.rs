@@ -1,19 +1,32 @@
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::Inferior;
+use crate::inferior::{Inferior, self};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
 
 pub struct Debugger {
     target: String,
     history_path: String,
     readline: Editor<()>,
     inferior: Option<Inferior>,
+    debug_data: DwarfData,
 }
 
 impl Debugger {
     /// Initializes the debugger.
     pub fn new(target: &str) -> Debugger {
         // TODO (milestone 3): initialize the DwarfData
+        let debug_data = match DwarfData::from_file(target) {
+            Ok(val) => val,
+            Err(DwarfError::ErrorOpeningFile) => {
+                println!("Could not open file {}", target);
+                std::process::exit(1);
+            }
+            Err(DwarfError::DwarfFormatError(err)) => {
+                println!("Could not debugging symbols from {}: {:?}", target, err);
+                std::process::exit(1);
+            }
+        };
 
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
@@ -25,6 +38,7 @@ impl Debugger {
             history_path,
             readline,
             inferior: None,
+            debug_data,
         }
     }
 
@@ -32,19 +46,71 @@ impl Debugger {
         loop {
             match self.get_next_command() {
                 DebuggerCommand::Run(args) => {
+                    if self.inferior.is_some() {
+                        let inferior = self.inferior.as_mut().unwrap();
+                        inferior.kill_and_reap();
+                    }
+
                     if let Some(inferior) = Inferior::new(&self.target, &args) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         // TODO (milestone 1): make the inferior run
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
+                        self.restart_child();
+                        
                     } else {
                         println!("Error starting subprocess");
                     }
                 }
+                DebuggerCommand::Cont => {
+                    if self.inferior.is_none() {
+                        println!("Error: no process has started yet");
+                        continue;
+                    }
+                    self.restart_child();
+                }
+                DebuggerCommand::Back => {
+                    let inferior = self.inferior.as_mut().unwrap();
+                    inferior.print_backtrace(&self.debug_data)
+                        .expect("can not backtrace");
+                }
                 DebuggerCommand::Quit => {
+                    if self.inferior.is_some() {
+                        let inferior = self.inferior.as_mut().unwrap();
+                        inferior.kill_and_reap();
+                    }
                     return;
                 }
+            }
+        }
+    }
+    
+
+    fn restart_child(&mut self) {
+        let inferior = self.inferior.as_mut().unwrap();
+        match inferior.cont() {
+            Ok(status) => {
+                match status {
+                    inferior::Status::Exited(code) => {
+                        println!("Child exited (status {})", code);
+                        self.inferior = None;
+                    },
+
+                    inferior::Status::Stopped(sig, reg) => {
+                        println!("Chid stopped (signal {})", sig);
+                        let line = self.debug_data.get_line_from_addr(reg)
+                            .expect("can not read the line from rip");
+                        let func = self.debug_data.get_function_from_addr(reg)
+                            .expect("can not get function from rip");
+                        println!("Stopped at {}:{}", func, line);
+                    },
+                    _ => {}
+                }
+            }
+
+            Err(err) => {
+                println!("Error in continuing subprocess: {}", err);
             }
         }
     }
