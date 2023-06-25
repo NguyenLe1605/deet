@@ -10,6 +10,7 @@ pub struct Debugger {
     readline: Editor<()>,
     inferior: Option<Inferior>,
     debug_data: DwarfData,
+    breakpoints: Vec<usize>,
 }
 
 impl Debugger {
@@ -28,6 +29,8 @@ impl Debugger {
             }
         };
 
+        debug_data.print();
+
         let history_path = format!("{}/.deet_history", std::env::var("HOME").unwrap());
         let mut readline = Editor::<()>::new();
         // Attempt to load history from ~/.deet_history if it exists
@@ -39,6 +42,7 @@ impl Debugger {
             readline,
             inferior: None,
             debug_data,
+            breakpoints: vec![],
         }
     }
 
@@ -51,7 +55,7 @@ impl Debugger {
                         inferior.kill_and_reap();
                     }
 
-                    if let Some(inferior) = Inferior::new(&self.target, &args) {
+                    if let Some(inferior) = Inferior::new(&self.target, &args, &self.breakpoints) {
                         // Create the inferior
                         self.inferior = Some(inferior);
                         // TODO (milestone 1): make the inferior run
@@ -74,6 +78,15 @@ impl Debugger {
                     let inferior = self.inferior.as_mut().unwrap();
                     inferior.print_backtrace(&self.debug_data)
                         .expect("can not backtrace");
+                }
+                DebuggerCommand::Break(breakpoint) => {
+                    if !breakpoint.starts_with("*") {
+                        continue;
+                    }
+                    let bpoint = &breakpoint[1..];
+                    let addr = parse_address(bpoint).unwrap();
+                    self.breakpoints.push(addr);
+                    println!("Set breakpoint {} at {}", self.breakpoints.len() - 1, bpoint);   
                 }
                 DebuggerCommand::Quit => {
                     if self.inferior.is_some() {
@@ -99,11 +112,9 @@ impl Debugger {
 
                     inferior::Status::Stopped(sig, reg) => {
                         println!("Chid stopped (signal {})", sig);
-                        let line = self.debug_data.get_line_from_addr(reg)
-                            .expect("can not read the line from rip");
-                        let func = self.debug_data.get_function_from_addr(reg)
-                            .expect("can not get function from rip");
-                        println!("Stopped at {}:{}", func, line);
+                        if let Some(line) = self.debug_data.get_line_from_addr(reg) {
+                            println!("Stopped at {}", line);
+                        }
                     },
                     _ => {}
                 }
@@ -155,4 +166,13 @@ impl Debugger {
             }
         }
     }
+}
+
+fn parse_address(addr: &str) -> Option<usize> {
+    let addr_without_0x = if addr.to_lowercase().starts_with("0x") {
+        &addr[2..]
+    } else {
+        &addr
+    };
+    usize::from_str_radix(addr_without_0x, 16).ok()
 }

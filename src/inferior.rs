@@ -5,6 +5,7 @@ use nix::unistd::Pid;
 use std::os::unix::process::CommandExt;
 use std::process::Child;
 use std::process::Command;
+use std::mem::size_of;
 
 use crate::dwarf_data::DwarfData;
 
@@ -19,6 +20,10 @@ pub enum Status {
     /// Indicates the inferior exited due to a signal. Contains the signal that killed the
     /// process.
     Signaled(signal::Signal),
+}
+
+fn align_addr_to_word(addr: usize) -> usize {
+    addr & (-(size_of::<usize>() as isize) as usize)
 }
 
 /// This function calls ptrace with PTRACE_TRACEME to enable debugging on a process. You should use
@@ -37,7 +42,7 @@ pub struct Inferior {
 impl Inferior {
     /// Attempts to start a new inferior process. Returns Some(Inferior) if successful, or None if
     /// an error is encountered.
-    pub fn new(target: &str, args: &Vec<String>) -> Option<Inferior> {
+    pub fn new(target: &str, args: &Vec<String>, breakpoints: &Vec<usize>) -> Option<Inferior> {
         // TODO: implement me!
         let mut c = Command::new(target);
         let cmd = c.args(args);
@@ -46,21 +51,19 @@ impl Inferior {
         }
 
         if let Ok(child) = cmd.spawn() {
-            let inferior = Inferior{
+            let mut inferior = Inferior{
                 child: child
             };
 
             return match inferior.wait(None) {
                 Err(_) => None,
-                Ok(status) => match status {
-                    Status::Stopped(signal, _) => {
-                        match signal {
-                            signal::SIGTRAP => Some(inferior),
-                            _ => None
-                        }
+                Ok(Status::Stopped(signal::SIGTRAP, _)) => {
+                    for bpoint in breakpoints.iter() {
+                        inferior.write_byte(*bpoint, 0xcc).ok()?;
                     }
-                    _ => None
-                }
+                    Some(inferior)
+                },
+                _ => None,
             }       
         }
 
@@ -129,4 +132,20 @@ impl Inferior {
         }
         Ok(())
     }
+
+    fn write_byte(&mut self, addr: usize, val: u8) -> Result<u8, nix::Error> {
+        let aligned_addr = align_addr_to_word(addr);
+        let byte_offset = addr - aligned_addr;
+        let word = ptrace::read(self.pid(), aligned_addr as ptrace::AddressType)? as u64;
+        let orig_byte = (word >> 8 * byte_offset) & 0xff;
+        let masked_word = word & !(0xff << 8 * byte_offset);
+        let updated_word = masked_word | ((val as u64) << 8 * byte_offset);
+        ptrace::write(
+            self.pid(),
+            aligned_addr as ptrace::AddressType,
+            updated_word as *mut std::ffi::c_void,
+        )?;
+        Ok(orig_byte as u8)
+    }
 }
+
