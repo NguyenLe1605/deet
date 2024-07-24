@@ -1,8 +1,8 @@
 use crate::debugger_command::DebuggerCommand;
-use crate::inferior::{Inferior, self};
+use crate::dwarf_data::{DwarfData, Error as DwarfError};
+use crate::inferior::{self, Inferior};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
-use crate::dwarf_data::{DwarfData, Error as DwarfError};
 
 pub struct Debugger {
     target: String,
@@ -62,7 +62,6 @@ impl Debugger {
                         // You may use self.inferior.as_mut().unwrap() to get a mutable reference
                         // to the Inferior object
                         self.restart_child();
-                        
                     } else {
                         println!("Error starting subprocess");
                     }
@@ -76,7 +75,8 @@ impl Debugger {
                 }
                 DebuggerCommand::Back => {
                     let inferior = self.inferior.as_mut().unwrap();
-                    inferior.print_backtrace(&self.debug_data)
+                    inferior
+                        .print_backtrace(&self.debug_data)
                         .expect("can not backtrace");
                 }
                 DebuggerCommand::Break(breakpoint) => {
@@ -84,7 +84,8 @@ impl Debugger {
                     if breakpoint.starts_with("*") {
                         addr = parse_address(&breakpoint[1..]).unwrap();
                     } else {
-                        if let Some(val) = self.debug_data.get_addr_for_function(None, &breakpoint) {
+                        if let Some(val) = self.debug_data.get_addr_for_function(None, &breakpoint)
+                        {
                             addr = val;
                         } else {
                             println!("there is no function named {} in the file", breakpoint);
@@ -93,7 +94,6 @@ impl Debugger {
                     }
 
                     self.install_breakpoint(addr);
-
                 }
                 DebuggerCommand::Quit => {
                     if self.inferior.is_some() {
@@ -109,32 +109,34 @@ impl Debugger {
     fn install_breakpoint(&mut self, addr: usize) {
         self.breakpoints.push(addr);
         if let Some(inferior) = self.inferior.as_mut() {
-            inferior.install_breakpoint(addr)
+            inferior
+                .install_breakpoint(addr)
                 .expect("can not install breakpoint");
         }
-        println!("Set breakpoint {} at 0x{:x}", self.breakpoints.len() - 1, addr);  
+        println!(
+            "Set breakpoint {} at 0x{:x}",
+            self.breakpoints.len() - 1,
+            addr
+        );
     }
-    
 
     fn restart_child(&mut self) {
         let inferior = self.inferior.as_mut().unwrap();
         match inferior.cont() {
-            Ok(status) => {
-                match status {
-                    inferior::Status::Exited(code) => {
-                        println!("Child exited (status {})", code);
-                        self.inferior = None;
-                    },
-
-                    inferior::Status::Stopped(sig, reg) => {
-                        println!("Chid stopped (signal {})", sig);
-                        if let Some(line) = self.debug_data.get_line_from_addr(reg) {
-                            println!("Stopped at {}", line);
-                        }
-                    },
-                    _ => {}
+            Ok(status) => match status {
+                inferior::Status::Exited(code) => {
+                    println!("Child exited (status {})", code);
+                    self.inferior = None;
                 }
-            }
+
+                inferior::Status::Stopped(sig, reg) => {
+                    println!("Chid stopped (signal {})", sig);
+                    if let Some(line) = self.debug_data.get_line_from_addr(reg) {
+                        println!("Stopped at {}", line);
+                    }
+                }
+                _ => {}
+            },
 
             Err(err) => {
                 panic!("Error in continuing subprocess: {}", err);
@@ -192,3 +194,4 @@ fn parse_address(addr: &str) -> Option<usize> {
     };
     usize::from_str_radix(addr_without_0x, 16).ok()
 }
+
